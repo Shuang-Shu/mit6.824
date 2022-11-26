@@ -10,15 +10,20 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
-import "plugin"
-import "os"
-import "fmt"
-import "log"
+import (
+	"fmt"
+	"log"
+	"os"
+	"plugin"
+
+	"6.824/mr"
+	"6.824/utils"
+)
 
 func main() {
+	utils.ResetArgs()
 	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so\n")
+		fmt.Fprintf(os.Stderr, "Usage: c xxx.so\n")
 		os.Exit(1)
 	}
 

@@ -1,10 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+)
 
+const ()
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,7 +27,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -32,10 +34,27 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	// 1. Send a work request RPC to the coordinator, then get the workerId
+	ok, workerId := callHandshake(MAP_WORKER)
+	if !ok {
+		fmt.Printf("call failed!\n")
+	} else {
+		fmt.Println(ok, workerId)
+	}
+}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+// handshake request
+func callHandshake(workerType int) (bool, int) {
+	args := Args{}
+	args.RequestType = REQUEST_FOR_WORK
+	args.WorkerType = workerType
+	reply := Reply{}
+	ok := call("Coordinator.Handshake", &args, &reply)
+	if ok {
+		return true, reply.WorkerId
+	} else {
+		return false, -1
+	}
 }
 
 //

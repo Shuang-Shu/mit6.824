@@ -6,13 +6,17 @@ package main
 // go run mrsequential.go wc.so pg*.txt
 //
 
-import "fmt"
-import "6.824/mr"
-import "plugin"
-import "os"
-import "log"
-import "io/ioutil"
-import "sort"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"plugin"
+	"sort"
+
+	"6.824/mr"
+	"6.824/utils"
+)
 
 // for sorting by key.
 type ByKey []mr.KeyValue
@@ -23,11 +27,13 @@ func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 func main() {
+	utils.ResetArgs()
+	fmt.Println(os.Args)
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: mrsequential xxx.so inputfiles...\n")
 		os.Exit(1)
 	}
-
+	// load plugins
 	mapf, reducef := loadPlugin(os.Args[1])
 
 	//
@@ -47,7 +53,7 @@ func main() {
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
-		intermediate = append(intermediate, kva...)
+		intermediate = append(intermediate, kva...) // 追加一个切片, 切片需要解包
 	}
 
 	//
@@ -56,7 +62,7 @@ func main() {
 	// rather than being partitioned into NxM buckets.
 	//
 
-	sort.Sort(ByKey(intermediate))
+	sort.Sort(ByKey(intermediate)) // 中间变量
 
 	oname := "mr-out-0"
 	ofile, _ := os.Create(oname)
