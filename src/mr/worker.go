@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"time"
 )
 
 const ()
@@ -35,25 +36,44 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	// 1. Send a work request RPC to the coordinator, then get the workerId
-	ok, workerId := callHandshake(MAP_WORKER)
+	ok, workerId, workerTerm := callHandshake(MAP_WORKER)
 	if !ok {
 		fmt.Printf("call failed!\n")
 	} else {
 		fmt.Println(ok, workerId)
 	}
+	// 2. Start a keepAlive goroutine
+	go callKeepAlive(workerId, MAP_WORKER, workerTerm)
+	for {
+		time.Sleep(time.Second)
+	}
 }
 
 // handshake request
-func callHandshake(workerType int) (bool, int) {
+func callHandshake(workerType int) (bool, int, int) {
 	args := Args{}
 	args.RequestType = REQUEST_FOR_WORK
 	args.WorkerType = workerType
 	reply := Reply{}
 	ok := call("Coordinator.Handshake", &args, &reply)
 	if ok {
-		return true, reply.WorkerId
+		return true, reply.WorkerId, reply.TermId
 	} else {
-		return false, -1
+		return false, -1, -1
+	}
+}
+
+// keepAlive request
+func callKeepAlive(workerId int, workerType int, term int) {
+	for {
+		time.Sleep(time.Second) // call keepAlive rpc per second
+		args, reply := Args{}, Reply{}
+		args.TermId = term
+		term++
+		args.WorkerId = workerId
+		args.WorkerType = workerType
+		call("Coordinator.KeepAlive", &args, &reply)
+		term = reply.TermId // synchronize termId by reply
 	}
 }
 

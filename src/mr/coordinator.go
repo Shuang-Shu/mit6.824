@@ -1,11 +1,15 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
+	"sync"
+	"time"
 )
 
 // request type
@@ -22,10 +26,16 @@ const (
 // the id of worker
 var uniqueId = 1
 
+// current term of coordinator
+var currentTerm int = 0
+
+// Mutex
+var mutex sync.Mutex = sync.Mutex{}
+
 type Coordinator struct {
 	// Your definitions here.
-	mapWorkerIds   []int // ids of map workers
-	reduceWokerIds []int // ids of reduce workers
+	mapWorkers   map[int]int // map from mapWorkerId to term
+	reduceWokers map[int]int // map from reduceWorkerId to term
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -43,6 +53,12 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 // handshake request rpc
 func (c *Coordinator) Handshake(args *Args, reply *Reply) error {
 	reply.WorkerId = uniqueId
+	reply.TermId = currentTerm
+	if args.WorkerType == MAP_WORKER {
+		c.mapWorkers[uniqueId] = currentTerm
+	} else if args.WorkerType == REDUCE_WORKER {
+		c.reduceWokers[uniqueId] = currentTerm
+	}
 	uniqueId++
 	return nil
 }
@@ -80,11 +96,13 @@ type Args struct {
 	RequestType int // request type, defined by const
 	WorkerId    int // id of worker, received from coordinator in first request
 	WorkerType  int // type of worker, may be MAP or REDUCE
+	TermId      int // current term of worker
 }
 
 // request reply
 type Reply struct {
 	WorkerId int
+	TermId   int // current term of coordinator
 }
 
 //
@@ -96,7 +114,47 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-
+	//
+	c.mapWorkers = make(map[int]int)
+	c.reduceWokers = make(map[int]int)
+	go c.checkAlive() // start keepAlive goroutine
 	c.server()
 	return &c
+}
+
+// keep alive function, in a single goroutine
+func (c *Coordinator) checkAlive() {
+	for {
+		time.Sleep(time.Second) // check worker alive status per second
+		currentTerm++           // increase current term
+		mutex.Lock()
+		// check map workers
+		for k, v := range c.mapWorkers {
+			if currentTerm-v > 10 {
+				fmt.Println("worker:" + strconv.Itoa(k) + " die")
+				delete(c.mapWorkers, k)
+			}
+		}
+		// check reduce workers
+		for k, v := range c.reduceWokers {
+			if currentTerm-v > 10 {
+				delete(c.reduceWokers, k)
+			}
+		}
+		mutex.Unlock()
+	}
+}
+
+// keep alive rpc
+// map has race problem on c
+func (c *Coordinator) KeepAlive(args *Args, reply *Reply) error {
+	mutex.Lock()
+	if args.WorkerType == MAP_WORKER {
+		c.mapWorkers[args.WorkerId] = currentTerm
+	} else {
+		c.reduceWokers[args.WorkerId] = currentTerm
+	}
+	mutex.Unlock()
+	fmt.Println("worker:" + strconv.Itoa(args.WorkerId) + " keep alive")
+	return nil
 }
