@@ -19,8 +19,8 @@ const (
 
 // worker type
 const (
-	MAP_WORKER = iota
-	REDUCE_WORKER
+	MAP_WORK = iota
+	REDUCE_WORK
 )
 
 // the id of worker
@@ -31,6 +31,9 @@ var currentTerm int = 0
 
 // Mutex
 var mutex sync.Mutex = sync.Mutex{}
+
+// file names
+var fileNames []string
 
 type Coordinator struct {
 	// Your definitions here.
@@ -53,10 +56,11 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 // handshake request rpc
 func (c *Coordinator) Handshake(args *Args, reply *Reply) error {
 	reply.WorkerId = uniqueId
-	reply.TermId = currentTerm
-	if args.WorkerType == MAP_WORKER {
+	reply.Term = currentTerm
+	reply.FileName = fileNames[0]
+	if args.WorkerType == MAP_WORK {
 		c.mapWorkers[uniqueId] = currentTerm
-	} else if args.WorkerType == REDUCE_WORKER {
+	} else if args.WorkerType == REDUCE_WORK {
 		c.reduceWokers[uniqueId] = currentTerm
 	}
 	uniqueId++
@@ -96,13 +100,16 @@ type Args struct {
 	RequestType int // request type, defined by const
 	WorkerId    int // id of worker, received from coordinator in first request
 	WorkerType  int // type of worker, may be MAP or REDUCE
-	TermId      int // current term of worker
+	Term        int // current term of worker
 }
 
 // request reply
 type Reply struct {
-	WorkerId int
-	TermId   int // current term of coordinator
+	WorkerId     int
+	Term         int    // current term of coordinator
+	FileName     string // string of file name
+	WorkType     int    // assigned work type
+	ReduceNumber int    // reduce tasks number
 }
 
 //
@@ -115,6 +122,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	//
+	fileNames = files
 	c.mapWorkers = make(map[int]int)
 	c.reduceWokers = make(map[int]int)
 	go c.checkAlive() // start keepAlive goroutine
@@ -149,7 +157,7 @@ func (c *Coordinator) checkAlive() {
 // map has race problem on c
 func (c *Coordinator) KeepAlive(args *Args, reply *Reply) error {
 	mutex.Lock()
-	if args.WorkerType == MAP_WORKER {
+	if args.WorkerType == MAP_WORK {
 		c.mapWorkers[args.WorkerId] = currentTerm
 	} else {
 		c.reduceWokers[args.WorkerId] = currentTerm
@@ -157,4 +165,10 @@ func (c *Coordinator) KeepAlive(args *Args, reply *Reply) error {
 	mutex.Unlock()
 	fmt.Println("worker:" + strconv.Itoa(args.WorkerId) + " keep alive")
 	return nil
+}
+
+// receive a done rpc
+// this means a misson has been finished
+func (c *Coordinator) ProcessDone(args *Args, reply *Reply) {
+
 }

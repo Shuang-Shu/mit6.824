@@ -1,10 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -36,30 +40,66 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	// 1. Send a work request RPC to the coordinator, then get the workerId
-	ok, workerId, workerTerm := callHandshake(MAP_WORKER)
-	if !ok {
+	reply := callHandshake(MAP_WORK)
+	if reply.Term == -1 {
 		fmt.Printf("call failed!\n")
 	} else {
-		fmt.Println(ok, workerId)
+		fmt.Println("ok", reply.WorkerId)
 	}
 	// 2. Start a keepAlive goroutine
-	go callKeepAlive(workerId, MAP_WORKER, workerTerm)
-	for {
-		time.Sleep(time.Second)
+	go callKeepAlive(reply.WorkerId, MAP_WORK, reply.Term)
+	// 3. get work
+	// 3.1 map work
+	if reply.WorkType == MAP_WORK {
+		intermediate := []KeyValue{}
+		file, err := os.Open(reply.FileName)
+		if err != nil {
+			fmt.Println("cannot open file")
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", reply.FileName)
+		}
+		file.Close()
+
+		kva := mapf(reply.FileName, string(content))
+		intermediate = append(intermediate, kva...)
+		outJson, err := json.Marshal(intermediate)
+		if err != nil {
+			fmt.Println("cannot get json of intermediate")
+		}
+		/*
+			save intermediate result to a file
+			its name format is 'mr-X-Y'
+			which X is ths task number, Y is reduce task id
+			Y is caculated by ihash fucntion
+		*/
+		strI := strconv.Itoa(reply.WorkerId)
+		y := ihash(strI) % reply.ReduceNumber
+		strY := strconv.Itoa(y)
+		fileName := "mr-" + strI + "-" + strY
+		intermediateFile, err := os.Create(fileName)
+		if err != nil {
+			fmt.Println("cannot create file")
+		}
+		intermediateFile.Write(outJson)
+	} else if reply.WorkType == REDUCE_WORK {
+		fmt.Println("not finished")
 	}
+
 }
 
 // handshake request
-func callHandshake(workerType int) (bool, int, int) {
+func callHandshake(workerType int) Reply {
 	args := Args{}
 	args.RequestType = REQUEST_FOR_WORK
 	args.WorkerType = workerType
 	reply := Reply{}
 	ok := call("Coordinator.Handshake", &args, &reply)
 	if ok {
-		return true, reply.WorkerId, reply.TermId
+		return reply
 	} else {
-		return false, -1, -1
+		return Reply{-1, -1, "", -1, -1}
 	}
 }
 
@@ -68,12 +108,12 @@ func callKeepAlive(workerId int, workerType int, term int) {
 	for {
 		time.Sleep(time.Second) // call keepAlive rpc per second
 		args, reply := Args{}, Reply{}
-		args.TermId = term
+		args.Term = term
 		term++
 		args.WorkerId = workerId
 		args.WorkerType = workerType
 		call("Coordinator.KeepAlive", &args, &reply)
-		term = reply.TermId // synchronize termId by reply
+		term = reply.Term // synchronize termId by reply
 	}
 }
 

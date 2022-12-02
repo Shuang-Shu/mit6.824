@@ -53,7 +53,7 @@ func main() {
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
-		intermediate = append(intermediate, kva...) // 追加一个切片, 切片需要解包
+		intermediate = append(intermediate, kva...) // append a slice, the slice should be unwrap
 	}
 
 	//
