@@ -8,7 +8,10 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,6 +24,13 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -39,81 +49,116 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-	// 1. Send a work request RPC to the coordinator, then get the workerId
-	reply := callHandshake(MAP_WORK)
-	if reply.Term == -1 {
-		fmt.Printf("call failed!\n")
-	} else {
-		fmt.Println("ok", reply.WorkerId)
-	}
-	// 2. Start a keepAlive goroutine
-	go callKeepAlive(reply.WorkerId, MAP_WORK, reply.Term)
-	// 3. get work
-	// 3.1 map work
-	if reply.WorkType == MAP_WORK {
-		intermediate := []KeyValue{}
-		file, err := os.Open(reply.FileName)
-		if err != nil {
-			fmt.Println("cannot open file")
+	for {
+		// ready
+		args := Args{}
+		reply := Reply{}
+		nilCount := 0
+		args.RequestType = REQUEST
+		var resultname string
+		for {
+			time.Sleep(time.Second)
+			reply = callRequest(&args, &reply)
+			nilCount++
+			if reply.Work.WorkType != NIL_WORK {
+				break
+			}
+			if nilCount > 10 {
+				println("no new work, exit")
+				return
+			}
 		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", reply.FileName)
-		}
-		file.Close()
+		// working
+		if reply.Work.WorkType == MAP_WORK {
+			intermediate := []KeyValue{}
+			file, err := os.Open(reply.Work.Filename)
+			if err != nil {
+				fmt.Println("cannot open file")
+			}
+			content, err := ioutil.ReadAll(file)
+			if err != nil {
+				log.Fatalf("cannot read %v", reply.Work.Filename)
+			}
+			file.Close()
 
-		kva := mapf(reply.FileName, string(content))
-		intermediate = append(intermediate, kva...)
-		outJson, err := json.Marshal(intermediate)
-		if err != nil {
-			fmt.Println("cannot get json of intermediate")
-		}
-		/*
-			save intermediate result to a file
-			its name format is 'mr-X-Y'
-			which X is ths task number, Y is reduce task id
-			Y is caculated by ihash fucntion
-		*/
-		strI := strconv.Itoa(reply.WorkerId)
-		y := ihash(strI) % reply.ReduceNumber
-		strY := strconv.Itoa(y)
-		fileName := "mr-" + strI + "-" + strY
-		intermediateFile, err := os.Create(fileName)
-		if err != nil {
-			fmt.Println("cannot create file")
-		}
-		intermediateFile.Write(outJson)
-	} else if reply.WorkType == REDUCE_WORK {
-		fmt.Println("not finished")
-	}
+			kva := mapf(reply.Work.Filename, string(content))
+			intermediate = append(intermediate, kva...)
+			outJson, err := json.Marshal(intermediate)
+			if err != nil {
+				fmt.Println("cannot get json of intermediate")
+			}
+			/*
+				save intermediate result to a file
+				its name format is 'mr-Y-intermediate'
+				Y is reduce task id
+				Y is caculated by ihash fucntion
+			*/
+			y := ihash(reply.Work.Filename) % reply.ReduceNumber
+			strY := strconv.Itoa(y)
+			resultname = "mr-" + strY + "-intermediate"
+			intermediateFile, err := os.Create(resultname)
+			if err != nil {
+				fmt.Println("cannot create file")
+			}
+			intermediateFile.Write(outJson)
+			intermediateFile.Close()
+		} else {
+			var targetFile *os.File
+			var err error
+			for {
+				time.Sleep(time.Second)
+				strs := strings.Split(reply.Work.Filename, "-")
+				targetFilename := strs[0] + "-out-" + strs[1]
+				targetFile, err = os.Open(targetFilename)
+				if err != nil {
+					targetFile, err = os.Create(targetFilename)
+					if err != nil {
+						continue
+					}
+				}
+				break
+			}
+			file, _ := os.Open(reply.Work.Filename)
+			syscall.Flock(int(targetFile.Fd()), syscall.LOCK_EX) // request for a ex-lock
+			syscall.Flock(int(file.Fd()), syscall.LOCK_SH)       // request for a s-lock
+			content, _ := ioutil.ReadAll(file)
+			var intermediate []KeyValue
+			json.Unmarshal(content, &intermediate)
+			sort.Sort(ByKey(intermediate))
+			i := 0
+			for i < len(intermediate) {
+				j := i + 1
+				for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, intermediate[k].Value)
+				}
+				output := reducef(intermediate[i].Key, values)
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(targetFile, "%v %v\n", intermediate[i].Key, output)
+				i = j
+			}
 
+			file.Close()
+			targetFile.Close()
+		}
+		// finished
+		args.RequestType = REPORT
+		args.Work = reply.Work
+		args.IntermediateName = resultname
+		callRequest(&args, &Reply{})
+	}
 }
 
 // handshake request
-func callHandshake(workerType int) Reply {
-	args := Args{}
-	args.RequestType = REQUEST_FOR_WORK
-	args.WorkerType = workerType
-	reply := Reply{}
-	ok := call("Coordinator.Handshake", &args, &reply)
+func callRequest(args *Args, reply *Reply) Reply {
+	ok := call("Coordinator.Request", args, reply)
 	if ok {
-		return reply
+		return *reply
 	} else {
-		return Reply{-1, -1, "", -1, -1}
-	}
-}
-
-// keepAlive request
-func callKeepAlive(workerId int, workerType int, term int) {
-	for {
-		time.Sleep(time.Second) // call keepAlive rpc per second
-		args, reply := Args{}, Reply{}
-		args.Term = term
-		term++
-		args.WorkerId = workerId
-		args.WorkerType = workerType
-		call("Coordinator.KeepAlive", &args, &reply)
-		term = reply.Term // synchronize termId by reply
+		return Reply{}
 	}
 }
 

@@ -1,44 +1,47 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 )
 
-// request type
-const (
-	REQUEST_FOR_WORK = iota // the first request, when receiving this request, coordinator should put workers' id into mapWorkerIds
-)
-
-// worker type
+// work type
 const (
 	MAP_WORK = iota
 	REDUCE_WORK
+	NIL_WORK
 )
 
-// the id of worker
-var uniqueId = 1
+// request type
+const (
+	REQUEST = iota
+	REPORT
+)
 
 // current term of coordinator
 var currentTerm int = 0
 
+// reduce task number
+var reduceNumber int
+
 // Mutex
 var mutex sync.Mutex = sync.Mutex{}
 
-// file names
-var fileNames []string
+type Work struct {
+	WorkType int    // work type, can be map or reduce
+	Filename string // name of file that to be processed
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	mapWorkers   map[int]int // map from mapWorkerId to term
-	reduceWokers map[int]int // map from reduceWorkerId to term
+	leftWorks     map[Work]int // works to be done (actually is a set, int value is unused)
+	doingWorks    map[Work]int // works is doing, int refer to term that the work starts.
+	finishedWorks map[Work]int // works have been done (actually is a set, int value is unused)
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -54,17 +57,43 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 // handshake request rpc
-func (c *Coordinator) Handshake(args *Args, reply *Reply) error {
-	reply.WorkerId = uniqueId
-	reply.Term = currentTerm
-	reply.FileName = fileNames[0]
-	if args.WorkerType == MAP_WORK {
-		c.mapWorkers[uniqueId] = currentTerm
-	} else if args.WorkerType == REDUCE_WORK {
-		c.reduceWokers[uniqueId] = currentTerm
+func (c *Coordinator) Request(args *Args, reply *Reply) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+	if args.RequestType == REQUEST {
+		if len(c.leftWorks) == 0 {
+			reply.Work.WorkType = NIL_WORK
+			return nil
+		}
+		newWork := c.assignWork()
+		// modify data
+		delete(c.leftWorks, newWork)
+		c.doingWorks[newWork] = currentTerm
+		// modify reply
+		reply.Work = newWork
+		reply.ReduceNumber = reduceNumber
+	} else {
+		_, ok := c.doingWorks[args.Work]
+		if ok {
+			c.finishedWorks[args.Work] = 0
+			delete(c.doingWorks, args.Work)
+			if args.Work.WorkType == MAP_WORK {
+				reduceWork := Work{REDUCE_WORK, args.IntermediateName}
+				c.leftWorks[reduceWork] = 0
+			}
+		}
+		reply.Work.WorkType = NIL_WORK
 	}
-	uniqueId++
 	return nil
+}
+
+// asign a work
+func (c *Coordinator) assignWork() Work {
+	newWork := Work{}
+	for w := range c.leftWorks {
+		newWork = w
+	}
+	return newWork
 }
 
 //
@@ -91,84 +120,72 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(c.doingWorks)+len(c.leftWorks) == 0 {
+		ret = true
+	}
 	return ret
 }
 
 // request args
 type Args struct {
-	RequestType int // request type, defined by const
-	WorkerId    int // id of worker, received from coordinator in first request
-	WorkerType  int // type of worker, may be MAP or REDUCE
-	Term        int // current term of worker
+	Work             Work   // work to be reported
+	RequestType      int    // request type, may be request or report
+	IntermediateName string // intermediate file name
 }
 
 // request reply
 type Reply struct {
-	WorkerId     int
-	Term         int    // current term of coordinator
-	FileName     string // string of file name
-	WorkType     int    // assigned work type
-	ReduceNumber int    // reduce tasks number
+	Work         Work // work to be assigned
+	ReduceNumber int  // reduce tasks number
 }
 
 //
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
-//
+// nReduce is the number of reduce tasks to
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
 	//
-	fileNames = files
-	c.mapWorkers = make(map[int]int)
-	c.reduceWokers = make(map[int]int)
-	go c.checkAlive() // start keepAlive goroutine
+	reduceNumber = nReduce
+	c.doingWorks = make(map[Work]int)
+	c.finishedWorks = make(map[Work]int)
+	c.leftWorks = make(map[Work]int)
+	for _, fn := range files {
+		work := Work{MAP_WORK, fn}
+		c.leftWorks[work] = 0
+	}
+	go timeFlies()
+	go c.killLazy()
 	c.server()
 	return &c
 }
 
-// keep alive function, in a single goroutine
-func (c *Coordinator) checkAlive() {
+// increase term per sec
+func timeFlies() {
 	for {
-		time.Sleep(time.Second) // check worker alive status per second
-		currentTerm++           // increase current term
+		time.Sleep(time.Second)
 		mutex.Lock()
-		// check map workers
-		for k, v := range c.mapWorkers {
-			if currentTerm-v > 10 {
-				fmt.Println("worker:" + strconv.Itoa(k) + " die")
-				delete(c.mapWorkers, k)
-			}
-		}
-		// check reduce workers
-		for k, v := range c.reduceWokers {
-			if currentTerm-v > 10 {
-				delete(c.reduceWokers, k)
-			}
-		}
+		currentTerm = currentTerm + 1
 		mutex.Unlock()
 	}
 }
 
-// keep alive rpc
-// map has race problem on c
-func (c *Coordinator) KeepAlive(args *Args, reply *Reply) error {
-	mutex.Lock()
-	if args.WorkerType == MAP_WORK {
-		c.mapWorkers[args.WorkerId] = currentTerm
-	} else {
-		c.reduceWokers[args.WorkerId] = currentTerm
+// clear the dead doing work
+func (c *Coordinator) killLazy() {
+	for {
+		time.Sleep(5 * time.Second)
+		mutex.Lock()
+		// delete element in iteration is safe in golang
+		for work, term := range c.doingWorks {
+			if currentTerm-term > 10 {
+				delete(c.doingWorks, work)
+				c.leftWorks[work] = 0
+			}
+		}
+		mutex.Unlock()
 	}
-	mutex.Unlock()
-	fmt.Println("worker:" + strconv.Itoa(args.WorkerId) + " keep alive")
-	return nil
-}
-
-// receive a done rpc
-// this means a misson has been finished
-func (c *Coordinator) ProcessDone(args *Args, reply *Reply) {
-
 }
