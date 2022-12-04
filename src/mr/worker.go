@@ -56,8 +56,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		nilCount := 0
 		args.RequestType = REQUEST
 		var resultname string
+		var prefix string
 		for {
-			time.Sleep(time.Second)
 			reply = callRequest(&args, &reply)
 			nilCount++
 			if reply.Work.WorkType != NIL_WORK {
@@ -67,10 +67,11 @@ func Worker(mapf func(string, string) []KeyValue,
 				println("no new work, exit")
 				return
 			}
+			time.Sleep(time.Second)
 		}
 		// working
 		if reply.Work.WorkType == MAP_WORK {
-			intermediate := []KeyValue{}
+			// reduce work
 			file, err := os.Open(reply.Work.Filename)
 			if err != nil {
 				fmt.Println("cannot open file")
@@ -82,48 +83,77 @@ func Worker(mapf func(string, string) []KeyValue,
 			file.Close()
 
 			kva := mapf(reply.Work.Filename, string(content))
-			intermediate = append(intermediate, kva...)
-			outJson, err := json.Marshal(intermediate)
-			if err != nil {
-				fmt.Println("cannot get json of intermediate")
-			}
 			/*
 				save intermediate result to a file
-				its name format is 'mr-Y-intermediate'
+				its name format is 'mr-Y-X'
+				X is term of task
 				Y is reduce task id
 				Y is caculated by ihash fucntion
 			*/
-			y := ihash(reply.Work.Filename) % reply.ReduceNumber
-			strY := strconv.Itoa(y)
-			resultname = "mr-" + strY + "-intermediate"
-			intermediateFile, err := os.Create(resultname)
-			if err != nil {
-				fmt.Println("cannot create file")
+			strX := strconv.Itoa(reply.Work.WorkId)
+			mapedKv := make([][]KeyValue, reply.ReduceNumber)
+			for _, kv := range kva {
+				y := ihash(kv.Key) % reply.ReduceNumber
+				if mapedKv[y] == nil {
+					mapedKv[y] = make([]KeyValue, 0)
+				}
+				mapedKv[y] = append(mapedKv[y], kv)
 			}
-			intermediateFile.Write(outJson)
-			intermediateFile.Close()
+			// save maped intermediate
+			for i := 0; i < reply.ReduceNumber; i++ {
+				if mapedKv[i] == nil {
+					continue
+				}
+				prefix = "mr-" + strconv.Itoa(i)
+				resultname = prefix + "-" + strX
+				file, _ := os.Create(resultname)
+				outJson, _ := json.Marshal(mapedKv[i])
+				file.Write(outJson)
+				file.Close()
+			}
 		} else {
+			// reduce work
 			var targetFile *os.File
 			var err error
 			for {
-				time.Sleep(time.Second)
 				strs := strings.Split(reply.Work.Filename, "-")
 				targetFilename := strs[0] + "-out-" + strs[1]
 				targetFile, err = os.Open(targetFilename)
 				if err != nil {
 					targetFile, err = os.Create(targetFilename)
 					if err != nil {
+						time.Sleep(time.Second)
 						continue
 					}
 				}
 				break
 			}
-			file, _ := os.Open(reply.Work.Filename)
+			// find all files in current directory
+			files, err := os.Open(".")
+			if err != nil {
+				panic(err)
+			}
+			defer files.Close()
+
+			// read file infos
+			fileInfos, err := files.Readdir(-1)
+			if err != nil {
+				panic(err)
+			}
+
+			intermediate := []KeyValue{}
 			syscall.Flock(int(targetFile.Fd()), syscall.LOCK_EX) // request for a ex-lock
-			syscall.Flock(int(file.Fd()), syscall.LOCK_SH)       // request for a s-lock
-			content, _ := ioutil.ReadAll(file)
-			var intermediate []KeyValue
-			json.Unmarshal(content, &intermediate)
+			for _, fileInfo := range fileInfos {
+				if strings.HasPrefix(fileInfo.Name(), reply.Work.Filename) {
+					file, _ := os.Open(fileInfo.Name())
+					syscall.Flock(int(file.Fd()), syscall.LOCK_SH) // request for a s-lock
+					content, _ := ioutil.ReadAll(file)
+					partIntermediate := []KeyValue{}
+					json.Unmarshal(content, &partIntermediate)
+					intermediate = append(intermediate, partIntermediate...)
+					file.Close()
+				}
+			}
 			sort.Sort(ByKey(intermediate))
 			i := 0
 			for i < len(intermediate) {
@@ -140,19 +170,16 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Fprintf(targetFile, "%v %v\n", intermediate[i].Key, output)
 				i = j
 			}
-
-			file.Close()
 			targetFile.Close()
 		}
 		// finished
 		args.RequestType = REPORT
 		args.Work = reply.Work
-		args.IntermediateName = resultname
 		callRequest(&args, &Reply{})
 	}
 }
 
-// handshake request
+// request
 func callRequest(args *Args, reply *Reply) Reply {
 	ok := call("Coordinator.Request", args, reply)
 	if ok {
