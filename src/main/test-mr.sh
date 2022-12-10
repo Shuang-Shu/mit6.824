@@ -71,6 +71,8 @@ rm -f mr-out*
 
 echo '***' Starting wc test.
 
+echo $TIMEOUT
+
 $TIMEOUT ../mrcoordinator ../pg*txt &
 pid=$!
 
@@ -78,8 +80,8 @@ pid=$!
 sleep 1
 
 # start multiple workers.
-$TIMEOUT ../mrworker ../../mrapps/wc.so &
-$TIMEOUT ../mrworker ../../mrapps/wc.so &
+# $TIMEOUT ../mrworker ../../mrapps/wc.so &
+# $TIMEOUT ../mrworker ../../mrapps/wc.so & 
 $TIMEOUT ../mrworker ../../mrapps/wc.so &
 
 # wait for the coordinator to exit.
@@ -95,6 +97,7 @@ else
   echo '---' wc output is not the same as mr-correct-wc.txt
   echo '---' wc test: FAIL
   failed_any=1
+  exit 1
 fi
 
 # wait for remaining workers and coordinator to exit.
