@@ -60,18 +60,19 @@ func Worker(mapf func(string, string) []KeyValue,
 		for {
 			reply = callRequest(&args, &reply)
 			nilCount++
-			if reply.Work.WorkType != NIL_WORK {
+			if reply.Work.WorkId != 0 {
 				break
 			}
-			if nilCount > 10 {
-				println("no new work, exit")
+			fmt.Println("failed to get a work")
+			if nilCount > 50 {
+				fmt.Println("no new work, exit")
 				return
 			}
-			time.Sleep(time.Second)
+			time.Sleep(10 * time.Second)
 		}
 		// working
 		if reply.Work.WorkType == MAP_WORK {
-			// reduce work
+			// map work
 			file, err := os.Open(reply.Work.Filename)
 			if err != nil {
 				fmt.Println("cannot open file")
@@ -99,7 +100,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 				mapedKv[y] = append(mapedKv[y], kv)
 			}
-			// save maped intermediate
+			// save mapped intermediate
 			for i := 0; i < reply.ReduceNumber; i++ {
 				if mapedKv[i] == nil {
 					continue
@@ -111,13 +112,15 @@ func Worker(mapf func(string, string) []KeyValue,
 				file.Write(outJson)
 				file.Close()
 			}
-		} else {
+		} else if reply.Work.WorkType == REDUCE_WORK {
 			// reduce work
 			var targetFile *os.File
 			var err error
 			for {
 				strs := strings.Split(reply.Work.Filename, "-")
-				targetFilename := strs[0] + "-out-" + strs[1]
+				targetFilename := strs[0] + "-" + strs[1] + "-" + strconv.Itoa(reply.Work.WorkId) + "-out"
+				args.Work = reply.Work
+				args.Work.Filename = targetFilename
 				targetFile, err = os.Open(targetFilename)
 				if err != nil {
 					targetFile, err = os.Create(targetFilename)
@@ -144,14 +147,24 @@ func Worker(mapf func(string, string) []KeyValue,
 			intermediate := []KeyValue{}
 			syscall.Flock(int(targetFile.Fd()), syscall.LOCK_EX) // request for a ex-lock
 			for _, fileInfo := range fileInfos {
-				if strings.HasPrefix(fileInfo.Name(), reply.Work.Filename) {
-					file, _ := os.Open(fileInfo.Name())
-					syscall.Flock(int(file.Fd()), syscall.LOCK_SH) // request for a s-lock
-					content, _ := ioutil.ReadAll(file)
-					partIntermediate := []KeyValue{}
-					json.Unmarshal(content, &partIntermediate)
-					intermediate = append(intermediate, partIntermediate...)
-					file.Close()
+				if strings.HasPrefix(fileInfo.Name(), reply.Work.Filename) && !strings.HasSuffix(fileInfo.Name(), "-out") {
+					fileWorkId, _ := strconv.Atoi(strings.Split(fileInfo.Name(), "-")[2])
+					ok := false
+					for _, validId := range reply.ValidWorkIdSet {
+						if validId == fileWorkId {
+							ok = true
+							break
+						}
+					}
+					if ok {
+						file, _ := os.Open(fileInfo.Name())
+						syscall.Flock(int(file.Fd()), syscall.LOCK_SH) // request for a s-lock
+						content, _ := ioutil.ReadAll(file)
+						partIntermediate := []KeyValue{}
+						json.Unmarshal(content, &partIntermediate)
+						intermediate = append(intermediate, partIntermediate...)
+						file.Close()
+					}
 				}
 			}
 			sort.Sort(ByKey(intermediate))
@@ -174,8 +187,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		// finished
 		args.RequestType = REPORT
-		args.Work = reply.Work
+		if args.Work.WorkType == MAP_WORK {
+			args.Work = reply.Work
+		}
+
 		callRequest(&args, &Reply{})
+		time.Sleep(time.Second)
 	}
 }
 

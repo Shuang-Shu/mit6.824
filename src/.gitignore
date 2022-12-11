@@ -13,3 +13,4 @@ mrtmp.*
 /main/mr-out-0
 /.vscode/*
 /main/.vscode/*
+/main/mr-*

@@ -1,12 +1,14 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,13 +30,19 @@ const (
 var currentTerm int = 0
 
 // work id
-var workId int = 0
+var workId int = 1
 
 // reduce task number
 var reduceNumber int
 
 // Mutex
 var mutex sync.Mutex = sync.Mutex{}
+
+// save the valid map workId of specified reduce task
+var validWorkIdSet []int = make([]int, 0)
+
+// success reduce workId slice
+var successReduceId []string = make([]string, 0)
 
 type Work struct {
 	WorkId   int    // term that this task is processed
@@ -69,25 +77,39 @@ func (c *Coordinator) Request(args *Args, reply *Reply) error {
 	if args.RequestType == REQUEST {
 		// asign a work
 		if len(c.leftMapWorks)+len(c.leftReduceWorks) == 0 {
-			reply.Work.WorkType = NIL_WORK
 			return nil
 		}
-		newWork := c.assignWork()
+		newWork, ok := c.assignWork()
+		if !ok {
+			fmt.Println(c.doingWorks)
+			return nil
+		}
 		// modify data
 		c.deletWork(newWork)
 		newWork.WorkId = workId
 		c.doingWorks[newWork] = currentTerm
+		workId++
 		// modify reply
 		reply.Work = newWork
-		workId++
 		reply.ReduceNumber = reduceNumber
+		reply.ValidWorkIdSet = validWorkIdSet
 	} else {
+		var fullName string
+		if args.Work.WorkType == REDUCE_WORK {
+			fullName = args.Work.Filename
+			nameComponent := strings.Split(args.Work.Filename, "-")
+			args.Work.Filename = nameComponent[0] + "-" + nameComponent[1]
+		}
 		_, ok := c.doingWorks[args.Work]
 		if ok {
+			if args.Work.WorkType == MAP_WORK {
+				validWorkIdSet = append(validWorkIdSet, args.Work.WorkId)
+			} else {
+				successReduceId = append(successReduceId, fullName)
+			}
 			c.finishedWorks[args.Work] = 0
 			delete(c.doingWorks, args.Work)
 		}
-		reply.Work.WorkType = NIL_WORK
 	}
 	return nil
 }
@@ -101,14 +123,24 @@ func (c *Coordinator) deletWork(work Work) {
 }
 
 // asign a work
-func (c *Coordinator) assignWork() Work {
+func (c *Coordinator) assignWork() (Work, bool) {
+	// this is not right. Because thought the c.leftMapWorks is empty, some map tasks may still be running. so this should check running works to ensure that there is no map work is running.
 	for w := range c.leftMapWorks {
-		return w
+		return w, true
+	}
+	// check is there any map work is still running
+	for w := range c.doingWorks {
+		if w.WorkType == MAP_WORK {
+			time.Sleep(500 * time.Millisecond)
+			result := Work{}
+			result.WorkType = NIL_WORK
+			return result, false
+		}
 	}
 	for w := range c.leftReduceWorks {
-		return w
+		return w, true
 	}
-	return Work{}
+	return Work{}, false
 }
 
 //
@@ -140,6 +172,13 @@ func (c *Coordinator) Done() bool {
 	if len(c.doingWorks)+len(c.leftMapWorks)+len(c.leftReduceWorks) == 0 {
 		ret = true
 	}
+	if ret {
+		for _, filename := range successReduceId {
+			nameComponent := strings.Split(filename, "-")
+			newName := nameComponent[0] + "-out-" + nameComponent[1]
+			os.Rename(filename, newName)
+		}
+	}
 	return ret
 }
 
@@ -152,8 +191,9 @@ type Args struct {
 
 // request reply
 type Reply struct {
-	Work         Work // work to be assigned
-	ReduceNumber int  // reduce tasks number
+	Work           Work  // work to be assigned
+	ReduceNumber   int   // reduce tasks number
+	ValidWorkIdSet []int // valid workId set, only use in reduce work
 }
 
 //
@@ -165,44 +205,39 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Your code here.
 	//
+	fmt.Println(nReduce)
 	reduceNumber = nReduce
 	c.doingWorks = make(map[Work]int)
 	c.finishedWorks = make(map[Work]int)
 	c.leftMapWorks = make(map[Work]int)
 	c.leftReduceWorks = make(map[Work]int)
 	for _, fn := range files {
-		work := Work{currentTerm, MAP_WORK, fn}
-		c.leftMapWorks[work] = 0
+		if strings.HasSuffix(fn, ".txt") {
+			work := Work{currentTerm, MAP_WORK, fn}
+			c.leftMapWorks[work] = 0
+		}
 	}
 	for idx := 0; idx < nReduce; idx++ {
 		work := Work{currentTerm, REDUCE_WORK, "mr-" + strconv.Itoa(idx)}
 		c.leftReduceWorks[work] = 0
 	}
-	go timeFlies()
 	go c.killLazy()
 	c.server()
 	return &c
 }
 
-// increase term per sec
-func timeFlies() {
-	for {
-		time.Sleep(time.Second)
-		mutex.Lock()
-		currentTerm = currentTerm + 1
-		mutex.Unlock()
-	}
-}
-
 // clear the dead doing work
 func (c *Coordinator) killLazy() {
 	for {
-		time.Sleep(5 * time.Second)
+		time.Sleep(1 * time.Second)
 		mutex.Lock()
+		currentTerm++
 		// delete element in iteration is safe in golang
 		for work, term := range c.doingWorks {
-			if currentTerm-term > 1000 {
+			if currentTerm-term > 10 {
 				delete(c.doingWorks, work)
+				print("refresh work")
+				fmt.Println(work)
 				if work.WorkType == MAP_WORK {
 					c.leftMapWorks[work] = 0
 				} else if work.WorkType == REDUCE_WORK {

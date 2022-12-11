@@ -65,6 +65,7 @@ failed_any=0
 # first word-count
 
 # generate the correct output
+echo 3
 ../mrsequential ../../mrapps/wc.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-wc.txt
 rm -f mr-out*
@@ -80,8 +81,8 @@ pid=$!
 sleep 1
 
 # start multiple workers.
-# $TIMEOUT ../mrworker ../../mrapps/wc.so &
-# $TIMEOUT ../mrworker ../../mrapps/wc.so & 
+$TIMEOUT ../mrworker ../../mrapps/wc.so &
+$TIMEOUT ../mrworker ../../mrapps/wc.so & 
 $TIMEOUT ../mrworker ../../mrapps/wc.so &
 
 # wait for the coordinator to exit.
@@ -187,7 +188,7 @@ fi
 
 wait
 
-#########################################################
+# #########################################################
 echo '***' Starting job count test.
 
 rm -f mr-*
@@ -212,7 +213,7 @@ fi
 
 wait
 
-#########################################################
+# #########################################################
 # test whether any worker or coordinator exits before the
 # task has completed (i.e., all output files have been finalized)
 rm -f mr-*
